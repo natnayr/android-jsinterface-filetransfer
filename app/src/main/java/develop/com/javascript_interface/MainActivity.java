@@ -11,40 +11,34 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Environment;
 import android.provider.MediaStore;
-import android.support.annotation.RequiresApi;
 import android.support.v4.app.ActivityCompat;
-import android.support.v4.app.NotificationCompat;
+import android.support.v4.content.FileProvider;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
-import android.text.TextUtils;
 import android.util.Base64;
 import android.util.Log;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
-import android.widget.Toast;
-
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
-import java.io.InputStream;
-import java.io.UnsupportedEncodingException;
-import java.util.logging.Logger;
+import java.io.IOException;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 
 public class MainActivity extends AppCompatActivity {
 
     private Activity mActivity;
 
-    public static final int CAMERA_REQUEST_CODE = 1;
-    public static final int GALLERY_REQUEST_CODE = 2;
+    public static final int CAMERA_REQUEST_CODE = 100;
+    public static final int GALLERY_REQUEST_CODE = 200;
+    public static final float MAX_IMAGE_SIZE = 512;
 
     private JSInterface mJSInterface;
     private WebView mWebview;
+    private String mImageFilePath;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -65,18 +59,18 @@ public class MainActivity extends AppCompatActivity {
     public void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
 
-        Bitmap bitmap = null;
-
-        if (resultCode == Activity.RESULT_OK && data != null) {
+        if (resultCode == Activity.RESULT_OK) {
 
             switch (requestCode) {
                 case CAMERA_REQUEST_CODE:
 
                     try {
-                        final Bitmap selectedImage = (Bitmap) data.getExtras().get("data");
-                        String encodedImage = encodeImage(selectedImage);
+                        File file = new File(mImageFilePath);
+                        final Bitmap bitmap = MediaStore.Images.Media.getBitmap(getApplicationContext().getContentResolver(), Uri.fromFile(file));
 
-                        mWebview.loadUrl("javascript: takePhotoResponse('"+encodedImage+"')");
+                        String encodedImage = encodeImage(bitmap);
+
+                        mWebview.loadUrl("javascript: takePhotoResponse('" + encodedImage + "')");
 
                     } catch (Exception e) {
                         e.printStackTrace();
@@ -91,10 +85,9 @@ public class MainActivity extends AppCompatActivity {
                         final Bitmap selectedImage = BitmapFactory.decodeStream(getContentResolver().openInputStream(pickedImage));
 
                         //resize to 500 x 500
-                        Bitmap resizedBitmap = Bitmap.createScaledBitmap(selectedImage, 250, 250, false);
-                        String encodedImage = encodeImage(resizedBitmap);
+                        String encodedImage = encodeImage(selectedImage);
 
-                        mWebview.loadUrl("javascript: takePhotoResponse('"+encodedImage+"')");
+                        mWebview.loadUrl("javascript: takePhotoResponse('" + encodedImage + "')");
                     } catch (Exception e) {
                         e.printStackTrace();
                         Log.e(MainActivity.class.getSimpleName(), e.getLocalizedMessage(), e);
@@ -104,14 +97,44 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private String encodeImage(Bitmap bm) {
+    private String encodeImage(Bitmap bitmap) {
+        Bitmap scaledDownBitmap = scaleDown(bitmap);
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        bm.compress(Bitmap.CompressFormat.JPEG,100,baos);
+        scaledDownBitmap.compress(Bitmap.CompressFormat.JPEG, 100, baos);
         byte[] b = baos.toByteArray();
         String encImage = Base64.encodeToString(b, Base64.DEFAULT);
-
+        Log.d(MainActivity.class.getSimpleName(), "Base64: [[" + encImage + "]]");
         return encImage;
     }
+
+    private File createImageFile() throws IOException {
+        // Create an image file name
+        String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
+        String imageFileName = "JPEG_" + timeStamp + "_";
+        File storageDir = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
+        File image = File.createTempFile(
+                imageFileName,  /* prefix */
+                ".jpg",         /* suffix */
+                storageDir      /* directory */
+        );
+
+        // Save a file: path for use with ACTION_VIEW intents
+        mImageFilePath = image.getAbsolutePath();
+        return image;
+    }
+
+    public static Bitmap scaleDown(Bitmap realImage) {
+        float ratio = Math.min(
+                MAX_IMAGE_SIZE / realImage.getWidth(),
+                MAX_IMAGE_SIZE / realImage.getHeight());
+        int width = Math.round((float) ratio * realImage.getWidth());
+        int height = Math.round((float) ratio * realImage.getHeight());
+
+        Bitmap newBitmap = Bitmap.createScaledBitmap(realImage, width,
+                height, false);
+        return newBitmap;
+    }
+
 
     public class JSInterface {
         Context mContext;
@@ -127,8 +150,25 @@ public class MainActivity extends AppCompatActivity {
                 return;
             }
 
-            Intent cameraIntent = new Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE);
-            startActivityForResult(cameraIntent, CAMERA_REQUEST_CODE);
+            Intent cameraIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+            if (cameraIntent.resolveActivity(getPackageManager()) != null) {
+                //Create a file to store the image
+                File photoFile = null;
+                try {
+                    photoFile = createImageFile();
+                } catch (IOException ex) {
+                    // Error occurred while creating the File
+                    Log.e(MainActivity.class.getSimpleName(), "Error: " + ex.getMessage());
+                    ex.printStackTrace();
+                }
+                if (photoFile != null) {
+                    Uri photoURI = FileProvider.getUriForFile(getApplicationContext(),
+                            BuildConfig.APPLICATION_ID + ".fileprovider", photoFile);
+                    cameraIntent.putExtra(MediaStore.EXTRA_OUTPUT, photoURI);
+                    startActivityForResult(cameraIntent, CAMERA_REQUEST_CODE);
+                }
+
+            }
         }
 
         @JavascriptInterface   // must be added for API 17 or higher
